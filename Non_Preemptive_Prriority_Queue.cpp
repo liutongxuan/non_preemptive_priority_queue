@@ -19,7 +19,7 @@ const int MAX_PRIORITY = sizeof(unsigned long) * 8;
 class ITask
 {
 public:
-	virtual void Run() const = 0;
+	virtual bool Run() const = 0;
 	virtual unsigned int GetPriority() const = 0;
 };
 
@@ -32,10 +32,11 @@ public:
 		_ASSERT(_priority <= MAX_PRIORITY && _priority > 0);
 	}
 
-	virtual void Run() const
+	virtual bool Run() const
 	{
 		cout << _priority << " " << _description << endl;
 		this_thread::sleep_for(milliseconds(_execute_time));
+		return true;
 	}
 
 	virtual unsigned int GetPriority() const
@@ -57,9 +58,11 @@ private:
 class DefaultTask : public ITask
 {
 public:
-	virtual void Run() const
+	virtual bool Run() const
 	{
 		this_thread::sleep_for(milliseconds(1));
+		cout << ".";
+		return true;
 	}
 
 	virtual unsigned int GetPriority() const
@@ -67,8 +70,23 @@ public:
 		return 0;
 	}
 };
-
 shared_ptr<ITask> empty_task = make_shared<DefaultTask>();
+
+class TerminateTask : public ITask
+{
+public:
+	virtual bool Run() const
+	{
+		cout << "terminate thread" << endl;
+		return false;
+	}
+
+	virtual unsigned int GetPriority() const
+	{
+		return MAX_PRIORITY - 1;
+	}
+};
+shared_ptr<ITask> terminate_task = make_shared<TerminateTask>();
 
 class TasksMgr
 {
@@ -77,6 +95,19 @@ public:
 	{
 		_tasks.reserve(MAX_PRIORITY);
 		_tasks[0].push(empty_task);
+	}
+
+	void push_task(shared_ptr<ITask>&& task)
+	{
+		_mutex.lock();
+
+		unsigned int index = task->GetPriority();
+		_ASSERT(index <= MAX_PRIORITY && index > 0);
+
+		_tasks[index].push(task);
+		_flags.set(index);
+
+		_mutex.unlock();
 	}
 
 	void push_task(const shared_ptr<ITask>& task)
@@ -92,6 +123,11 @@ public:
 		_mutex.unlock();
 	}
 
+	void terminate()
+	{
+		push_task(terminate_task);
+	}
+
 	void emplace_task(const string& des, unsigned int pri, /*double arr, */unsigned int exe)
 	{
 		_mutex.lock();
@@ -99,10 +135,22 @@ public:
 		unsigned int index = pri;
 		_ASSERT(index <= MAX_PRIORITY && index > 0);
 
-		shared_ptr<ITask> task = make_shared<Task>(des, pri, /*arr,*/ exe);
-		_tasks[index].push(task);
+		_tasks[index].push(make_shared<Task>(des, pri, /*arr,*/ exe));
 		_flags.set(index);
 		
+		_mutex.unlock();
+	}
+
+	void emplace_task(string&& des, unsigned int pri, unsigned int exe)
+	{
+		_mutex.lock();
+
+		unsigned int index = pri;
+		_ASSERT(index <= MAX_PRIORITY && index > 0);
+
+		_tasks[index].push(make_shared<Task>(des, pri, /*arr,*/ exe));
+		_flags.set(index);
+
 		_mutex.unlock();
 	}
 
@@ -115,9 +163,10 @@ public:
 		shared_ptr<ITask> tmp = tasks.front();
 		
 		if (index != 0)
+		{
 			tasks.pop();
-
-		reset_bit_flag_in_index(index);
+			reset_bit_flag_in_index(index);
+		}
 
 		_mutex.unlock();
 		return tmp;
@@ -157,7 +206,8 @@ void scheduler()
 	while (true)
 	{
 		shared_ptr<ITask> task = global_tasks.pop_task();
-		task->Run();
+		if (!task->Run())
+			break;
 	}
 }
 
@@ -168,7 +218,7 @@ int _tmain(int argc, _TCHAR* argv[])
 	cout << "Sample 1" << endl;
 	{
 		this_thread::sleep_for(milliseconds(5)); 
-		global_tasks.emplace_task("Send data out", 3, 15);
+		global_tasks.emplace_task(string("Send data out"), 3, 15);
 		this_thread::sleep_for(milliseconds(5));
 		global_tasks.emplace_task("Update counter", 2, 20);
 		this_thread::sleep_for(milliseconds(4));
@@ -196,6 +246,8 @@ int _tmain(int argc, _TCHAR* argv[])
 		this_thread::sleep_for(milliseconds(35));
 		global_tasks.emplace_task("Send email", 20, 15);
 	}
+
+	global_tasks.terminate();
 
 	th.join();
 
